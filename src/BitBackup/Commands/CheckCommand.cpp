@@ -56,6 +56,7 @@
 #include "BitBackup/Core/BitBackupContext.h"
 #include "BitBackup/Core/BitBackupFiles.h"
 #include "BitBackup/Core/ListSet.h"
+#include "BitBackup/Core/StorageProfiler.h"
 #include <ctime>
 #include <random>
 #include <algorithm>
@@ -107,17 +108,6 @@ namespace BitBackup::Commands {
             for (auto& th : pool) th.join();
         }
 
-        unsigned resolveThreadCount(const Core::BitBackupArgs& args) {
-            if (args.hasArgument("threads")) {
-                try {
-                    const int t = std::stoi(args.getArgument("threads"));
-                    if (t >= 1) return static_cast<unsigned>(std::min(t, 256));
-                } catch (...) { /* fall through to default */ }
-            }
-            const unsigned hc = std::thread::hardware_concurrency();
-            return hc == 0 ? 4u : hc;
-        }
-
         // Whether the immediate containing directory of relPath still exists on
         // disk. Used to tell "the lock marker alone was removed" (directory
         // stays) apart from "the whole locked subtree vanished at once"
@@ -152,8 +142,25 @@ namespace BitBackup::Commands {
         Core::BitBackupFiles bitBackupFiles(bitBackupArgs);
         Core::BitBackupContext bitBackupContext(bitBackupFiles.workingDirAbsolutePath);
 
-        // Resolve performance/scan options once.
-        numThreads = resolveThreadCount(bitBackupArgs);
+        // Resolve performance/scan options once. Automatic hashing concurrency
+        // follows the storage medium instead of blindly following the CPU count:
+        // one stream for an HDD/unknown device, up to four for a SATA/general
+        // SSD and up to sixteen for NVMe. A valid threads=N argument remains an
+        // explicit override.
+        const Core::StorageMedium storageMedium =
+            Core::StorageProfiler::detect(bitBackupFiles.workingDir);
+        const string threadsValue = bitBackupArgs.hasArgument("threads")
+            ? bitBackupArgs.getArgument("threads")
+            : string();
+        const std::optional<std::string_view> requestedThreads =
+            bitBackupArgs.hasArgument("threads")
+                ? std::optional<std::string_view>(threadsValue)
+                : std::nullopt;
+        const Core::HashingPlan hashingPlan = Core::StorageProfiler::makePlan(
+            storageMedium,
+            requestedThreads,
+            std::thread::hardware_concurrency());
+        numThreads = hashingPlan.workers;
         quickMode = bitBackupArgs.hasArgument("quick") && bitBackupArgs.getArgument("quick") == "true";
         scrubPercent = 100;
         if (bitBackupArgs.hasArgument("scrub")) {
@@ -163,7 +170,9 @@ namespace BitBackup::Commands {
         }
         if (quickMode) scrubPercent = 0; // quick == scrub 0%
         confirmDelete = bitBackupArgs.hasArgument("confirm") && bitBackupArgs.getArgument("confirm") == "delete";
-        cout << "Options: threads=" << numThreads
+        cout << "Options: storage=" << Core::StorageProfiler::name(hashingPlan.medium)
+             << " threads=" << numThreads
+             << " (" << (hashingPlan.manualOverride ? "manual" : "auto") << ")"
              << " quick=" << (quickMode ? "true" : "false")
              << " scrub=" << scrubPercent << "%"
              << " confirm=" << (confirmDelete ? "delete" : "none") << std::endl;
@@ -399,6 +408,12 @@ namespace BitBackup::Commands {
 
         cout << "Part " << CheckCommandPart::FOUND_FILES_IN_FILESYSTEM
              << ": Found " << found.size() << " files." << endl;
+
+        // A deterministic path order improves directory and extent locality on
+        // rotational media. It also makes the new-file work queue reproducible.
+        std::sort(found.begin(), found.end(), [](const File& a, const File& b) {
+            return a.generic_string() < b.generic_string();
+        });
 
         return Core::ListSet<File>(
             std::move(found),
@@ -737,6 +752,12 @@ namespace BitBackup::Commands {
         for (const auto& f : dbList) {
             if (!missingFromDiskIds.count(f.id)) work.push_back(&f);
         }
+
+        // SQLite returns rows without a guaranteed order. Path order provides
+        // better locality for the single stream selected automatically on HDDs.
+        std::sort(work.begin(), work.end(), [](const FsFile* a, const FsFile* b) {
+            return a->absolutePath < b->absolutePath;
+        });
 
         // Decide which unchanged-modtime files to re-hash this run:
         //   scrubPercent==100 -> all (full bit-rot check, the default)

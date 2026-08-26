@@ -13,7 +13,7 @@ set(CCPSQLITE_DIR thirdparty/SQLiteCpp)
 add_subdirectory(${CCPSQLITE_DIR})
 
 # ---- Sources ----
-file(GLOB_RECURSE ALL_SOURCES "src/*.cpp")
+file(GLOB_RECURSE ALL_SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 
 # Isolate main.cpp
 # NOTE: GLOB_RECURSE yields absolute paths, so MAIN_SOURCE must be absolute too,
@@ -56,7 +56,7 @@ if (ENABLE_TESTS)
     add_subdirectory(vendor/googletest)
     enable_testing()
 
-    file(GLOB_RECURSE TEST_SOURCES "tests/*.cpp")
+    file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS "tests/*.cpp")
 
     add_executable(Tests ${TEST_SOURCES})
 

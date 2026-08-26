@@ -55,6 +55,16 @@ namespace BitBackup::Commands {
                                 Optional. Default=. (current working directory)
                             report=true or false
                                 Optional. Default= false (nothing will be reported to file .bitbackupreport.csv).
+                            threads={1..16}
+                                Optional manual hashing-worker override.
+                                Default=auto (HDD/unknown: 1, SSD: up to 4,
+                                NVMe: up to 16).
+                            quick=true or false
+                                Optional. Default=false. Skips unchanged files,
+                                but does not detect silent bit rot in them.
+                            scrub={0..100}
+                                Optional. Default=100. Re-hashes the oldest
+                                percentage of unchanged files in this run.
         help        Display help information
         version     Display version information
 )";
@@ -64,4 +74,3 @@ namespace BitBackup::Commands {
     }
     ;
 }
-

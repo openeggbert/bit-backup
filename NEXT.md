@@ -24,7 +24,10 @@ repo state (branch `develop`, HEAD `6eaae6b`) and observed build/test behavior.
   - Schema evolves via an **append-only, hash-validated** migration array.
   - DB self-integrity hash uses a **rollback journal (NOT WAL)** so the single
     `.sqlite3` file is always complete after commit.
-  - Hashing is parallel; **DB writes stay single-threaded**.
+  - Hashing is storage-aware: HDD/unknown storage defaults to one worker,
+    SATA/general SSD to at most four, and NVMe to at most 16;
+    `threads=N` overrides this up to 16.
+    **DB writes stay single-threaded**.
 
 ---
 
@@ -42,8 +45,9 @@ repo state (branch `develop`, HEAD `6eaae6b`) and observed build/test behavior.
   - Exit code: `check` returns **non-zero (1)** when bit rot OR a lock violation
     is found; `help`/`version` always return 0; unknown command/arguments print
     a clean error and return 1 (no more SIGABRT).
-- **Recently implemented (working):** batched SQLite writes; parallel SHA-512
-  hashing; `quick`/`scrub` modes; `.bitbackupignore` precompiled regex + fixed
+- **Recently implemented (working):** batched SQLite writes; storage-aware
+  parallel SHA-512 hashing; `quick`/`scrub` modes; `.bitbackupignore`
+  precompiled regex + fixed
   leading-slash/CRLF handling + directory pruning + negation/trailing-slash;
   graceful error handling; `.bitbackuplock` directory locking with a `LOCKED`
   DB column.

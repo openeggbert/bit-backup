@@ -69,7 +69,8 @@ namespace BitBackup::Commands {
         std::stringstream bitbackupindexSB;
 
         // Resolved once at the start of run() from the CLI arguments:
-        //   threads=N     number of hashing worker threads (default: hw concurrency)
+        //   threads=N     explicit hashing-worker override (1-16). Without it,
+        //                 HDD/unknown uses 1, SSD up to 4 and NVMe up to 16.
         //   quick=true    skip re-hashing files whose modtime is unchanged
         //                 (fast, but does NOT detect silent bit rot)
         //   scrub=N       re-hash only the oldest N% of unchanged-modtime files

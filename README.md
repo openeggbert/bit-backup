@@ -56,18 +56,29 @@ The primary command is `check`, which scans the specified directory and updates 
 | `report` | Set to `true` to generate a report file (`.bitbackupreport.csv`). | `false` |
 | `verbose`| Set to `true` to show detailed scan information. | `false` |
 | `bitbackupindex` | Set to `true` to generate a full file index (`.bitbackupindex.csv`). | `false` |
-| `threads` | Number of worker threads used for hashing. | CPU cores |
+| `threads` | Explicit number of hashing workers (`1`–`16`). Without this option, storage-aware automatic selection is used. | HDD/unknown: `1`; SSD: up to `4`; NVMe: up to `16` |
 | `quick`  | `true` skips re-hashing files whose modification time is unchanged. Fast, but does **not** detect silent bit rot. | `false` |
 | `scrub`  | Re-hash only the oldest `N`% of unchanged-modtime files this run (rotating coverage, like a scrub). `100` = full check, `0` = same as `quick`. | `100` |
 
 > Note: options must follow the explicit `check` command, e.g. `bit_backup check quick=true threads=8`.
 
 ### Performance
-Hashing runs in parallel across `threads` workers, and all database
-inserts/updates/deletes are batched into single transactions. For routine
-runs over very large trees, `quick=true` (skip unchanged files) or
-`scrub=N` (verify a rotating slice each run) keep wall-clock bounded while
-`scrub` still eventually re-verifies everything.
+On Linux, bit-backup detects whether the filesystem containing `dir` is backed
+by rotational, SATA/general solid-state, or NVMe storage. Detection follows
+underlying devices through dm-crypt, LVM, md, and similar block-device layers.
+A rotational drive (or storage whose type cannot be detected safely) uses one
+sequential hashing stream, an SSD uses up to four workers, and NVMe uses up to
+16, all bounded by the available CPU count. `threads=N` overrides this automatic
+choice and is capped at 16. The selected storage type, worker count, and whether
+it was automatic or manual are printed at startup.
+
+Files are processed in path order for better HDD locality, reads use 1 MiB
+chunks with a sequential-access hint on Linux, and all database
+inserts/updates/deletes are batched into single transactions. For routine runs
+over very large trees, `quick=true` (skip unchanged files) or `scrub=N` (verify
+a rotating slice each run) keep wall-clock bounded while `scrub` still
+eventually re-verifies everything. `quick=true` does not detect silent bit rot
+in files whose modification time is unchanged.
 
 ### Excluding Files (`.bitbackupignore`)
 Create a file named `.bitbackupignore` in the root of your scanned directory.

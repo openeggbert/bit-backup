@@ -43,11 +43,20 @@
 
 #include "BitBackup/Core/Utils.h"
 
+#include <cerrno>
+#include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <random>
 #include <vector>
+
+#ifdef __linux__
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #include "BitBackup/Core/BitBackupException.h"
 #include <openssl/sha.h> // Requires OpenSSL library for hashing
@@ -57,6 +66,15 @@
 
 namespace BitBackup::Core {
 
+    namespace {
+        struct FileCloser {
+            void operator()(FILE* file) const noexcept {
+                if (file != nullptr) {
+                    (void) std::fclose(file);
+                }
+            }
+        };
+    }
 
     std::vector<std::filesystem::path> Utils::listAllFilesInDir(const std::filesystem::path& dir){
         std::vector<std::filesystem::path> files;
@@ -123,10 +141,21 @@ namespace BitBackup::Core {
         }
 
         try {
-            std::ifstream fileStream(filePath, std::ios::in | std::ios::binary);
-            if (!fileStream) {
-                throw BitBackupException("Failed to open file: " + filePath.string());
+            const std::string nativePath = filePath.string();
+            FILE* rawFile = std::fopen(nativePath.c_str(), "rb");
+            if (rawFile == nullptr) {
+                throw BitBackupException(
+                    "Failed to open file: " + nativePath + ", " + std::strerror(errno));
             }
+            std::unique_ptr<FILE, FileCloser> fileStream(rawFile);
+
+#ifdef __linux__
+            // Hashing always consumes a file from start to finish. Tell the
+            // kernel so it can use appropriately aggressive sequential readahead,
+            // which is especially useful for the single-reader HDD profile.
+            (void) ::posix_fadvise(
+                ::fileno(fileStream.get()), 0, 0, POSIX_FADV_SEQUENTIAL);
+#endif
 
             union {
                 SHA512_CTX sha512Ctx;
@@ -145,26 +174,30 @@ namespace BitBackup::Core {
             // syscalls on big files. 1 MiB is a good throughput/footprint tradeoff.
             constexpr std::size_t bufferSize = 1u << 20; // 1 MiB
             std::vector<char> buffer(bufferSize);
-            while (fileStream.read(buffer.data(), static_cast<std::streamsize>(bufferSize))) {
-                if (algorithm == SHA512) {
-                    SHA512_Update(&(sha_context.sha512Ctx), buffer.data(), fileStream.gcount());
+            while (true) {
+                const std::size_t bytesRead =
+                    std::fread(buffer.data(), 1, buffer.size(), fileStream.get());
+                if (bytesRead > 0) {
+                    if (algorithm == SHA512) {
+                        SHA512_Update(&(sha_context.sha512Ctx), buffer.data(), bytesRead);
+                    }
+
+                    if (algorithm == SHA256) {
+                        SHA256_Update(&(sha_context.sha256Ctx), buffer.data(), bytesRead);
+                    }
                 }
 
-                if (algorithm == SHA256) {
-                    SHA256_Update(&(sha_context.sha256Ctx), buffer.data(), fileStream.gcount());
+                if (bytesRead == buffer.size()) {
+                    continue;
                 }
 
-            }
-            // Handle any remaining bytes at the end of the file
-            if (fileStream.gcount() > 0) {
-                if (algorithm == SHA512) {
-                    SHA512_Update(&(sha_context.sha512Ctx), buffer.data(), fileStream.gcount());
+                if (std::ferror(fileStream.get())) {
+                    throw BitBackupException(
+                        "Failed to read file: " + nativePath + ", " + std::strerror(errno));
                 }
 
-                if (algorithm == SHA256) {
-                    SHA256_Update(&(sha_context.sha256Ctx), buffer.data(), fileStream.gcount());
-                }
-
+                // A short read without an error is EOF.
+                break;
             }
 
             int SHAXXX_DIGEST_LENGTH = 0;
@@ -190,15 +223,15 @@ namespace BitBackup::Core {
                 SHA256_Final(hash256, &(sha_context.sha256Ctx));
             }
 
-            // Convert hash to a hexadecimal string
+            // Convert the digest to a hexadecimal string.
             std::ostringstream hashStream;
-            hashStream << std::hex; // Set hexadecimal format
+            hashStream << std::hex;
             for (size_t i = 0; i < SHAXXX_DIGEST_LENGTH; ++i) {
                 hashStream << std::setw(2) << std::setfill('0') << static_cast<int>(
                     algorithm == SHA512 ? hash512[i] : hash256[i]
                     );
             }
-            hashStream << std::dec; // Reset to decimal format
+            hashStream << std::dec;
             return hashStream.str();
         } catch (const std::exception& ex) {
             throw BitBackupException("Hashing file failed: " + filePath.string() + ", " + ex.what());
